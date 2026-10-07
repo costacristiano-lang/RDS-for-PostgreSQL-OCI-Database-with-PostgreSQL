@@ -6,13 +6,28 @@ Este procedimento migra **uma base PostgreSQL por vez** da AWS para a OCI com ca
 
 O exemplo usa **Amazon RDS for PostgreSQL** como origem e **OCI Database with PostgreSQL** como destino. As diferenças para Aurora PostgreSQL, PostgreSQL em EC2 e PostgreSQL em OCI Compute estão indicadas adiante. Substitua `appdb`, `app`, usuários, hosts e caminhos pelos valores do ambiente. Execute primeiro em homologação.
 
-```text
-Aplicação → PostgreSQL na AWS (provider)
-                         │  WAL lógico + slot
-                         ▼
-              PostgreSQL na OCI (subscriber)
-                         │
-                         └── Aplicação após o corte
+```mermaid
+flowchart LR
+    APP["Aplicação"]
+    SRC[("PostgreSQL AWS<br/>provider")]
+    TGT[("PostgreSQL OCI<br/>subscriber")]
+    subgraph INITIAL["Carga inicial"]
+        SCHEMA["pg_dump / pg_restore<br/>somente estrutura"]
+        SYNC["pglogical<br/>sincronização inicial das linhas"]
+    end
+    subgraph CDC["Sincronização contínua"]
+        WAL["WAL lógico<br/>replication slot"]
+        SUB["Assinatura pglogical<br/>aplicação das alterações"]
+        WAL --> SUB
+    end
+    APP -->|"Antes do corte"| SRC
+    SRC --> SCHEMA --> TGT
+    SRC --> SYNC --> TGT
+    SRC --> WAL
+    SUB --> TGT
+    TGT -. "Alcançar a origem e validar" .-> CUT["Parar escritas na AWS<br/>ajustar sequences e trocar endpoint"]
+    CUT --> APP
+    APP -. "Após o corte" .-> TGT
 ```
 
 O `pglogical` replica linhas de tabelas selecionadas. **Não é uma cópia completa do cluster:** roles, permissões, extensões, definições de objetos e DDL comum exigem tratamento separado. A sincronização inicial descrita aqui é feita pelo próprio `pglogical` (`synchronize_data := true`), portanto **não carregue previamente os dados nas mesmas tabelas do destino**. [Limitações do pglogical](https://github.com/2ndQuadrant/pglogical#limitations-and-restrictions) · [Tutorial da OCI](https://docs.oracle.com/en/learn/oci-pglogical-extension/index.html)
