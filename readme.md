@@ -1,4 +1,4 @@
-# Migração de PostgreSQL da AWS para OCI com pglogical
+# Migrar RDS PostgreSQL para OCI PostgreSQL usando o pglogical
 
 ## Objetivo e escopo
 
@@ -31,6 +31,40 @@ flowchart LR
 ```
 
 O `pglogical` replica linhas de tabelas selecionadas. **Não é uma cópia completa do cluster:** roles, permissões, extensões, definições de objetos e DDL comum exigem tratamento separado. A sincronização inicial descrita aqui é feita pelo próprio `pglogical` (`synchronize_data := true`), portanto **não carregue previamente os dados nas mesmas tabelas do destino**. [Limitações do pglogical](https://github.com/2ndQuadrant/pglogical#limitations-and-restrictions) · [Tutorial da OCI](https://docs.oracle.com/en/learn/oci-pglogical-extension/index.html)
+
+## Pré-requisitos
+
+### Origem — Amazon RDS for PostgreSQL
+
+- [ ] **Versões:** confirmar que a versão do RDS disponibiliza a extensão `pglogical` e registrar as versões do PostgreSQL e da extensão para validar a compatibilidade com a OCI.
+- [ ] **Parameter group:** associar um DB parameter group customizado; adicionar `pglogical` a `shared_preload_libraries`, preservando as bibliotecas existentes, e definir `rds.logical_replication = 1`.
+- [ ] **Reinício:** reservar uma janela para reiniciar a instância e aplicar os parâmetros; depois confirmar `wal_level = logical` e o carregamento de `pglogical`.
+- [ ] **Permissões:** usar uma conta com `rds_superuser` para preparar a extensão. A conta utilizada pela conexão de replicação precisa de permissão de replicação, acesso ao banco, aos schemas e leitura das tabelas selecionadas; revisar as concessões antes de criar a assinatura.
+- [ ] **Extensão por banco:** executar `CREATE EXTENSION IF NOT EXISTS pglogical;` em cada banco de origem incluído na migração.
+- [ ] **Capacidade:** dimensionar `max_replication_slots`, `max_wal_senders`, `max_worker_processes` e conexões para as assinaturas, a sincronização inicial e outros consumidores. Monitorar espaço para WAL retido pelos slots.
+- [ ] **Tabelas e escopo:** inventariar tabelas, sequences e objetos fora da replicação. Para `UPDATE`/`DELETE`, validar chave primária ou identidade de réplica suportada; `REPLICA IDENTITY FULL` não é suportado pelo pglogical.
+- [ ] **Acesso de rede:** disponibilizar o endpoint de escrita do RDS à OCI, com DNS, rotas e Security Group permitindo a conexão na porta PostgreSQL (normalmente 5432). Preparar a conexão TLS.
+
+Configuração do RDS: [habilitar a extensão pglogical na AWS](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Appendix.PostgreSQL.CommonDBATasks.pglogical.basic-setup.html). Dimensionamento e identidade de réplica: [documentação do pglogical](https://github.com/2ndQuadrant/pglogical#quick-setup).
+
+### Destino — OCI Database with PostgreSQL
+
+- [ ] **DB System:** provisionar o serviço com capacidade para armazenar os dados e aplicar as alterações durante a carga inicial; validar a compatibilidade das versões do PostgreSQL e do pglogical com a origem.
+- [ ] **Configuração customizada:** habilitar `pglogical` em uma configuração customizada, associá-la ao DB System e aguardar o estado **Active**. Conferir a extensão em `oci.admin_enabled_extensions`.
+- [ ] **Parâmetros:** seguir a configuração do tutorial OCI, que utiliza `wal_level = logical` e `track_commit_timestamp = on`. O segundo habilita timestamps de commit e é necessário para determinadas políticas de resolução de conflitos do pglogical; não substitui os checkpoints de replicação.
+- [ ] **Permissões e extensão:** ter uma conta administrativa do serviço para instalar `pglogical` no banco de destino e configurar node/assinatura, além das permissões necessárias para restaurar a estrutura e aplicar os dados.
+- [ ] **Estrutura compatível:** criar o banco com o mesmo encoding; conferir collation, tipos e extensões usados pela aplicação. Preparar schemas, tabelas, colunas e chaves compatíveis e recriar roles e grants.
+- [ ] **Tabelas vazias:** manter vazias as tabelas que receberão a sincronização com `synchronize_data := true`. Não importar previamente os mesmos dados nem permitir escritas da aplicação no destino antes do corte.
+- [ ] **Workers e conexões:** reservar `max_worker_processes` e conexões para os workers do pglogical, inclusive a sincronização inicial, conforme os limites da configuração do serviço.
+- [ ] **Rede e TLS:** permitir que o subscriber OCI alcance o endpoint de escrita do RDS e que o DSN do node OCI seja acessível. Validar VCN, NSGs/Security Lists, DNS e rotas entre as nuvens; para `sslmode=verify-full`, disponibilizar a CA no ambiente onde a conexão é executada.
+
+Configuração do serviço: [extensões no OCI PostgreSQL](https://docs.oracle.com/en-us/iaas/Content/postgresql/extensions.htm) e [tutorial oficial de pglogical na OCI](https://docs.oracle.com/en/learn/oci-pglogical-extension/index.html). Workers e políticas de conflito: [documentação do pglogical](https://github.com/2ndQuadrant/pglogical#quick-setup).
+
+### Preparação da migração
+
+- [ ] Disponibilizar uma máquina administrativa/bastion com acesso aos dois bancos e ferramentas `psql`, `pg_dump` e `pg_restore` compatíveis.
+- [ ] Testar o fluxo completo em homologação, incluindo carga inicial, replicação de DML e validação dos dados.
+- [ ] Planejar backup, coordenação de DDL, interrupção das escritas no corte, sincronização final de sequences e critérios de retorno.
 
 ## Decisões antes da execução
 
